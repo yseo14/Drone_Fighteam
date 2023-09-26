@@ -1,90 +1,77 @@
+import cv2
 import numpy as np
-import cv2 as cv
-from djitellopy import Tello
+from djitellopy import tello
+import time
 
-# Create a Tello object
-drone = Tello()
-
-# Connect to Tello
-drone.connect()
-
-def adjust_tello_position(offset_x, offset_y, offset_z):
-    """
-    Adjusts the position of the tello drone based on the offset values given from the frame
-
-    :param offset_x: Offset between center and face x coordinates
-    :param offset_y: Offset between center and face y coordinates
-    :param offset_z: Area of the face detection rectangle on the frame
-    """
-    if not -90 <= offset_x <= 90 and offset_x is not 0:
-        if offset_x < 0:
-            drone.rotate_ccw(10)
-        elif offset_x > 0:
-            drone.rotate_cw(10)
-
-    if not -70 <= offset_y <= 70 and offset_y is not -30:
-        if offset_y < 0:
-            drone.move_up(20)
-        elif offset_y > 0:
-            drone.move_down(20)
-
-    if not 15000 <= offset_z <= 30000 and offset_z is not 0:
-        if offset_z < 15000:
-            drone.move_forward(20)
-        elif offset_z > 30000:
-            drone.move_backward(20)
+me = tello.Tello()
+me.connect()
+# Getting the drones battery
+print(me.get_battery())
 
 
-face_cascade = cv.CascadeClassifier('cascades/haarcascade_frontalface_default.xml')
-frame_read = drone.get_frame_read()
+me.streamon()
+me.takeoff()
+me.send_rc_control(0, 0, 25, 0)
+time.sleep(2.2)
+w, h = 360, 240
+fbRange = [6200, 6800]
+pid = [0.4, 0.4, 0]
+pError = 0
+
+
+
+def findFace(img):
+    faceCascade= cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+    imgGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = faceCascade.detectMultiScale(imgGray, 1.2, 8)
+    myFaceListC = []
+    myFaceListArea = []
+
+    for (x, y, w, h) in faces:
+
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        cx = x + w // 2
+        cy = y + h // 2
+        area = w * h
+        cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
+        myFaceListC.append([cx, cy])
+        myFaceListArea.append(area)
+    if len(myFaceListArea) != 0:
+        i = myFaceListArea.index(max(myFaceListArea))
+
+        return img, [myFaceListC[i], myFaceListArea[i]]
+    else:
+        return img, [[0, 0], 0]
+
+def trackFace( info, w, pid, pError):
+    area = info[1]
+    x, y = info[0]
+    fb = 0
+    error = x - w // 2
+    speed = pid[0] * error + pid[1] * (error - pError)
+    speed = int(np.clip(speed, -100, 100))
+    if area > fbRange[0] and area < fbRange[1]:
+        fb = 0
+    elif area > fbRange[1]:
+        fb = -20
+    elif area < fbRange[0] and area != 0:
+        fb = 20
+    if x == 0:
+        speed = 0
+        error = 0
+    me.send_rc_control(0, fb, 0, speed)
+    return error
+
+
 while True:
-    # frame = cv.cvtColor(frame_read.frame, cv.COLOR_BGR2RGB)
-    frame = frame_read.frame
 
-    cap = drone.get_video_capture()
 
-    height = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
-    width = cap.get(cv.CAP_PROP_FRAME_WIDTH)
+    img = me.get_frame_read().frame
+    img = cv2.resize(img, (w, h))
+    img, info = findFace(img)
+    pError = trackFace( info, w, pid, pError)
+    cv2.imshow("SS-Corp Tetravaal", img)
 
-    # Calculate frame center
-    center_x = int(width / 2)
-    center_y = int(height / 2)
-
-    # Draw the center of the frame
-    cv.circle(frame, (center_x, center_y), 10, (0, 255, 0))
-
-    # Convert frame to grayscale in order to apply the haar cascade
-    gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.3, minNeighbors=5)
-
-    # If a face is recognized, draw a rectangle over it and add it to the face list
-    face_center_x = center_x
-    face_center_y = center_y
-    z_area = 0
-    for face in faces:
-        (x, y, w, h) = face
-        cv.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
-
-        face_center_x = x + int(h / 2)
-        face_center_y = y + int(w / 2)
-        z_area = w * h
-
-        cv.circle(frame, (face_center_x, face_center_y), 10, (0, 0, 255))
-
-    # Calculate recognized face offset from center
-    offset_x = face_center_x - center_x
-    # Add 30 so that the drone covers as much of the subject as possible
-    offset_y = face_center_y - center_y - 30
-
-    cv.putText(frame, f'[{offset_x}, {offset_y}, {z_area}]', (10, 50), cv.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 2,
-               cv.LINE_AA)
-    adjust_tello_position(offset_x, offset_y, z_area)
-
-    # Display the resulting frame
-    cv.imshow('Tello detection...', frame)
-    if cv.waitKey(1) == ord('q'):
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        me.land()
         break
-
-# Stop the BackgroundFrameRead and land the drone
-drone.end()
-cv.destroyAllWindows()
