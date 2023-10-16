@@ -9,7 +9,7 @@ swarm.connect()
 
 def takeoff_land(i, drone):
     drone.takeoff()
-    
+
     drone.enable_mission_pads()
     drone.set_mission_pad_detection_direction(2)
 
